@@ -5,9 +5,9 @@ get_pico_temp() {
     python3 -c "
 import serial, time
 try:
-    ser = serial.Serial(/dev/ttyACM0, 115200, timeout=0.5)
+    ser = serial.Serial(/dev/ttyACM0, 115200, timeout=0.4)
     ser.write(bTEMPrn)
-    time.sleep(0.2)
+    time.sleep(0.15)
     resp = ser.read_all().decode(utf-8, errors=ignore)
     for line in resp.splitlines():
         if PICO_TEMP: in line:
@@ -25,20 +25,17 @@ get_rpi_temp() {
 
 if [ "$1" = "--gui" ] || [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
     if which zenity >/dev/null 2>&1; then
-        (
-            while true; do
-                P_TEMP=$(get_pico_temp)
-                R_TEMP=$(get_rpi_temp)
-                echo "100"
-                echo "# 🌡️ Real-Time Temperature Monitor\n\n📌 Raspberry Pi Pico (RP2040):  $P_TEMP\n📌 Raspberry Pi 5 CPU:              $R_TEMP"
-                sleep 2
-            done
-        ) | zenity --progress --title="PocketTerm35 Temperatures" --text="Reading temperatures..." --percentage=100 --no-cancel --width=380 --height=160 2>/dev/null
+        P_TEMP=$(get_pico_temp)
+        R_TEMP=$(get_rpi_temp)
+        zenity --info \
+          --title="PocketTerm35 Temperatures" \
+          --text="<b>🌡️ PocketTerm35 Temperatures</b>\n\n🟢 <b>Raspberry Pi Pico (RP2040):</b>  ${P_TEMP}\n🔴 <b>Raspberry Pi 5 CPU:</b>             ${R_TEMP}" \
+          --no-wrap 2>/dev/null
         exit 0
     fi
 fi
 
-# Terminal Mode (Live updates every 2 seconds)
+# Terminal Mode
 clear
 echo "=============================================="
 echo "    🌡️ PocketTerm35 Real-Time Temperature"
