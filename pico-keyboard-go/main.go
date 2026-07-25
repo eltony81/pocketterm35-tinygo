@@ -133,7 +133,8 @@ func adPwmDown() {
 	machine.PWM1.Set(adPWMChan, adPWMVal)
 }
 
-func dispatchKeyEvent(kb *keyboard.Port, key keyboard.Keycode, pressed bool) {
+func dispatchKeyEvent(key keyboard.Keycode, pressed bool) {
+	kb := keyboard.Port()
 	if pressed {
 		switch key {
 		case keyboard.KeyCapsLock:
@@ -207,7 +208,7 @@ func dispatchKeyEvent(kb *keyboard.Port, key keyboard.Keycode, pressed bool) {
 
 func main() {
 	// 1. Initialize USB HID keyboard instance FIRST
-	kb := keyboard.Port()
+	_ = keyboard.Port()
 
 	// 2. Initialize GPIO pins
 	for _, pin := range rowPins {
@@ -272,12 +273,12 @@ func main() {
 					if key != 0 {
 						activeKeys[rIdx][cIdx] = key
 						if key != keyboard.Keycode(FnKey) {
-							dispatchKeyEvent(kb, key, true)
+							dispatchKeyEvent(key, true)
 						}
 					}
 				} else if !pressed && currentKey != 0 {
 					if currentKey != keyboard.Keycode(FnKey) {
-						dispatchKeyEvent(kb, currentKey, false)
+						dispatchKeyEvent(currentKey, false)
 					}
 					activeKeys[rIdx][cIdx] = 0
 				}
