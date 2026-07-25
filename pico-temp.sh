@@ -1,59 +1,70 @@
-#!/usr/bin/env bash
-# Real-time Pico & RPi 5 Temperature Monitor
+#!/bin/sh
+# PocketTerm35 Temperature Monitor
+# Da copiare in ~/tools/ sul PocketTerm35 (Raspberry Pi)
 
-# Reset terminal attributes and colors so text is never black-on-black
-stty sane 2>/dev/null || true
-printf "\033[0m"
+TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-get_pico_temp() {
-    python3 /home/tony/tools/get_pico_temp.py
-}
-
+# Temperatura RPi5 — cattura prima in variabile, poi processa
+# Il pipe diretto "vcgencmd | cut" causa il blocco se vcgencmd è lento
 get_rpi_temp() {
-    vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A"
+    RESULT="$(timeout 3 vcgencmd measure_temp 2>/dev/null)"
+    if [ -n "$RESULT" ]; then
+        echo "$RESULT" | cut -d= -f2
+    else
+        echo "N/A"
+    fi
 }
 
-P_TEMP=$(get_pico_temp)
-R_TEMP=$(get_rpi_temp)
+# Temperatura Pico RP2040 via seriale
+get_pico_temp() {
+    PY="${TOOLS_DIR}/get_pico_temp.py"
+    if [ -f "$PY" ]; then
+        timeout 3 python3 "$PY" 2>/dev/null || echo "N/A"
+    else
+        echo "N/A"
+    fi
+}
 
-# 1. GUI Mode (Zenity Desktop Popup when double-clicking Desktop Icon)
+P_TEMP="$(get_pico_temp)"
+R_TEMP="$(get_rpi_temp)"
+
+# 1. GUI Mode
 if [ "${1:-}" = "--gui" ]; then
-    if which zenity >/dev/null 2>&1; then
+    if command -v zenity >/dev/null 2>&1; then
         zenity --info \
           --title="PocketTerm35 Temperatures" \
-          --text="<b>🌡️ PocketTerm35 Temperatures</b>\n\n🟢 <b>Raspberry Pi Pico (RP2040):</b>  ${P_TEMP}\n🔴 <b>Raspberry Pi 5 CPU:</b>             ${R_TEMP}" \
+          --text="<b>🌡️ PocketTerm35 Temperatures</b>\n\n🟢 <b>Raspberry Pi Pico (RP2040):</b>  ${P_TEMP}\n🔴 <b>Raspberry Pi 5 CPU:</b>  ${R_TEMP}" \
           --no-wrap 2>/dev/null
-        exit 0
     fi
+    exit 0
 fi
 
-# 2. Continuous Loop Mode (--loop)
+# 2. Loop Mode
 if [ "${1:-}" = "--loop" ]; then
-    printf "\033[0m\033[2J\033[H"
+    printf "\033[2J\033[H"
     echo "=============================================="
     echo "    🌡️ PocketTerm35 Real-Time Temperature"
     echo "=============================================="
-    echo " Press Ctrl+C to exit."
+    echo " Premi Ctrl+C per uscire."
     echo ""
-
     while true; do
-        P_TEMP=$(get_pico_temp)
-        R_TEMP=$(get_rpi_temp)
-        echo -e "[ $(date +%H:%M:%S) ] \033[1;32m🟢 RP2040 Pico: ${P_TEMP}\033[0m  |  \033[1;31m🔴 RPi 5 CPU: ${R_TEMP}\033[0m"
+        P_TEMP="$(get_pico_temp)"
+        R_TEMP="$(get_rpi_temp)"
+        printf "[ %s ]  🟢 Pico: %s  |  🔴 RPi5: %s\n" \
+            "$(date +%H:%M:%S)" "${P_TEMP}" "${R_TEMP}"
         sleep 2
     done
     exit 0
 fi
 
-# 3. Default Shell / menu.sh Mode (High-contrast bright ANSI text)
-printf "\033[0m"
+# 3. Output normale
+printf "\033[0m\n"
+echo "=================================================="
+echo "    🌡️  PocketTerm35 Temperature Summary"
+echo "=================================================="
 echo ""
-echo -e "\033[1;36m==================================================\033[0m"
-echo -e "\033[1;37m    🌡️ PocketTerm35 Temperature Summary\033[0m"
-echo -e "\033[1;36m==================================================\033[0m"
+printf "  🟢 Raspberry Pi Pico (RP2040):  %s\n" "${P_TEMP}"
+printf "  🔴 Raspberry Pi 5 CPU:           %s\n" "${R_TEMP}"
 echo ""
-echo -e "  \033[1;32m🟢 Raspberry Pi Pico (RP2040):\033[0m  \033[1;37m${P_TEMP}\033[0m"
-echo -e "  \033[1;31m🔴 Raspberry Pi 5 CPU:\033[0m             \033[1;37m${R_TEMP}\033[0m"
-echo ""
-echo -e "\033[1;36m==================================================\033[0m"
+echo "=================================================="
 echo ""

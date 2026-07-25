@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"machine"
 	"machine/usb/hid/keyboard"
+	"strings"
 	"time"
 )
 
@@ -67,7 +69,15 @@ type KeyEvent struct {
 	Pressed bool
 }
 
+func getPicoTemperature() float32 {
+	milliC := machine.ReadTemperature()
+	return float32(milliC) / 1000.0
+}
+
 func main() {
+	// Initialize ADC
+	machine.InitADC()
+
 	// Initialize GPIO pins
 	for _, pin := range rowPins {
 		pin.Configure(machine.PinConfig{Mode: machine.PinInputPulldown})
@@ -88,6 +98,9 @@ func main() {
 
 	// Goroutine 1: High speed Matrix Scanner
 	go matrixScanner(keyChan)
+
+	// Goroutine 2: Non-blocking Serial Listener for Temperature requests
+	go serialListener()
 
 	// Main Loop: USB HID Event Dispatcher
 	handleEvents(keyChan)
@@ -157,6 +170,34 @@ func matrixScanner(ch chan<- KeyEvent) {
 		}
 
 		time.Sleep(time.Millisecond * 2)
+	}
+}
+
+func serialListener() {
+	var buf [64]byte
+	bufIdx := 0
+
+	for {
+		if machine.Serial.Buffered() > 0 {
+			b, err := machine.Serial.ReadByte()
+			if err == nil {
+				if b == 0x0A || b == 0x0D {
+					if bufIdx > 0 {
+						cmd := strings.TrimSpace(string(buf[:bufIdx]))
+						bufIdx = 0
+						cmdUpper := strings.ToUpper(cmd)
+						if cmdUpper == "TEMP" || cmdUpper == "PICO_TEMP" || cmdUpper == "STATUS" {
+							temp := getPicoTemperature()
+							fmt.Printf("PICO_TEMP: %.2f C\r\n", temp)
+						}
+					}
+				} else if bufIdx < len(buf)-1 {
+					buf[bufIdx] = b
+					bufIdx++
+				}
+			}
+		}
+		time.Sleep(time.Millisecond * 20)
 	}
 }
 
