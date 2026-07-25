@@ -23,7 +23,7 @@ if [ "$1" = "--gui" ]; then
 fi
 
 # Terminal Mode (Shell Console / TUI)
-clear
+clear 2>/dev/null || true
 echo "=============================================="
 echo "    🌡️ PocketTerm35 Real-Time Temperature"
 echo "=============================================="
