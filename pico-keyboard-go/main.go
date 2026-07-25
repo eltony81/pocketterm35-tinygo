@@ -31,24 +31,6 @@ var colPins = []machine.Pin{
 	machine.GP7, machine.GP8, machine.GP9, machine.GP10, machine.GP11, machine.GP12, machine.GP13, machine.GP14, machine.GP15, machine.GP16,
 }
 
-// Special status LED and PWM pins
-var (
-	pinGP22 = machine.GP22 // CapsLock LED
-	pinGP19 = machine.GP19 // Audio Mute
-	pinGP21 = machine.GP21 // Breathing / Status LED
-	pinGP20 = machine.GP20 // LCD Backlight PWM
-	pinGP18 = machine.GP18 // Audio Volume PWM
-)
-
-// PWM Hardware state
-var (
-	blPWMChan uint8
-	blPWMVal  uint32 = 32767 // Initial LCD backlight duty cycle (~50%)
-
-	adPWMChan uint8
-	adPWMVal  uint32 = 32700 // Initial audio duty cycle
-)
-
 // Default Key Matrix Map (7 rows x 10 cols)
 var keyMap = [7][10]keyboard.Keycode{
 	{keyboard.KeyUp, keyboard.KeyLeft, keyboard.KeyDown, keyboard.KeyRight, keyboard.KeyL, keyboard.KeyR, keyboard.KeyR, keyboard.KeyX, keyboard.KeyY, keyboard.KeyB},
@@ -71,89 +53,16 @@ var fnMap = [7][10]keyboard.Keycode{
 	{keyboard.Keycode(FnKey), keyboard.KeyLeftCtrl, keyboard.KeyLeftAlt, keyboard.KeyPrintscreen, keyboard.KeySpace, keyboard.KeyPause, keyboard.KeyRightAlt, keyboard.KeyLeftGUI, keyboard.Keycode(FnKey), 0},
 }
 
-// Fixed-size matrix state trackers (zero heap allocation)
+// Fixed-size matrix state trackers
 var (
 	activeKeys [7][10]keyboard.Keycode
 	rawScan    [7][10]bool
 )
 
-func initPWM() {
-	// Backlight PWM (GP20)
-	pinGP20.Configure(machine.PinConfig{Mode: machine.PinPWM})
-	machine.PWM2.Configure(machine.PWMConfig{Period: 1000000000 / 5000}) // 5kHz
-	blPWMChan, _ = machine.PWM2.Channel(pinGP20)
-	machine.PWM2.Set(blPWMChan, blPWMVal)
-
-	// Audio PWM (GP18)
-	pinGP18.Configure(machine.PinConfig{Mode: machine.PinPWM})
-	machine.PWM1.Configure(machine.PWMConfig{Period: 1000000000 / 5000}) // 5kHz
-	adPWMChan, _ = machine.PWM1.Channel(pinGP18)
-	machine.PWM1.Set(adPWMChan, adPWMVal)
-}
-
-func blPwmUp() {
-	if blPWMVal >= 65535 {
-		blPWMVal = 65535
-	} else {
-		blPWMVal += 6553
-		if blPWMVal > 65535 {
-			blPWMVal = 65535
-		}
-	}
-	machine.PWM2.Set(blPWMChan, blPWMVal)
-}
-
-func blPwmDown() {
-	if blPWMVal <= 6553 {
-		blPWMVal = 0
-	} else {
-		blPWMVal -= 6553
-	}
-	machine.PWM2.Set(blPWMChan, blPWMVal)
-}
-
-func adPwmUp() {
-	if adPWMVal >= 65535 {
-		adPWMVal = 65535
-	} else {
-		adPWMVal += 6553
-		if adPWMVal > 65535 {
-			adPWMVal = 65535
-		}
-	}
-	machine.PWM1.Set(adPWMChan, adPWMVal)
-}
-
-func adPwmDown() {
-	if adPWMVal <= 6553 {
-		adPWMVal = 0
-	} else {
-		adPWMVal -= 6553
-	}
-	machine.PWM1.Set(adPWMChan, adPWMVal)
-}
-
 func dispatchKeyEvent(key keyboard.Keycode, pressed bool) {
 	kb := keyboard.Port()
 	if pressed {
 		switch key {
-		case keyboard.KeyCapsLock:
-			pinGP22.Set(!pinGP22.Get())
-			kb.Down(keyboard.KeyCapsLock)
-			time.Sleep(time.Millisecond * 10)
-			kb.Up(keyboard.KeyCapsLock)
-		case keyboard.Keycode(FnMute):
-			pinGP19.Set(!pinGP19.Get())
-		case keyboard.Keycode(FnBLControlScreen):
-			pinGP21.Set(!pinGP21.Get())
-		case keyboard.Keycode(FnBLPWMUp):
-			blPwmUp()
-		case keyboard.Keycode(FnBLPWMDown):
-			blPwmDown()
-		case keyboard.Keycode(FnVolUp):
-			adPwmUp()
-		case keyboard.Keycode(FnVolDown):
-			adPwmDown()
 		case keyboard.Keycode(ShiftGrave): // ~
 			kb.Down(keyboard.KeyLeftShift)
 			time.Sleep(time.Millisecond * 5)
@@ -210,7 +119,7 @@ func main() {
 	// 1. Initialize USB HID keyboard instance FIRST
 	_ = keyboard.Port()
 
-	// 2. Initialize GPIO pins
+	// 2. Initialize GPIO pins for Matrix ONLY
 	for _, pin := range rowPins {
 		pin.Configure(machine.PinConfig{Mode: machine.PinInputPulldown})
 	}
@@ -218,19 +127,9 @@ func main() {
 		pin.Configure(machine.PinConfig{Mode: machine.PinInput})
 	}
 
-	pinGP22.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	pinGP19.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	pinGP21.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	pinGP22.Low()
-	pinGP19.Low()
-	pinGP21.Low()
-
-	// 3. Initialize PWM for LCD Backlight and Audio Volume
-	initPWM()
-
 	time.Sleep(time.Second * 1)
 
-	// 4. Main Synchronous Loop
+	// 3. Main Synchronous Loop
 	for {
 		// Clear raw scan matrix
 		for rIdx := 0; rIdx < 7; rIdx++ {
