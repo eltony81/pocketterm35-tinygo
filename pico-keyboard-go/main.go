@@ -143,7 +143,6 @@ func adPwmDown() {
 func getPicoTemperature() float32 {
 	milliC := machine.ReadTemperature()
 	temp := float32(milliC) / 1000.0
-	// RP2040 internal sensor VREF offset calibration
 	if temp < 0 {
 		temp += 35.0
 	}
@@ -173,7 +172,7 @@ func main() {
 	// Initialize PWM for LCD Backlight and Audio Volume
 	initPWM()
 
-	// Goroutine 1: High speed zero-allocation Matrix Scanner
+	// Goroutine 1: High speed debounced zero-allocation Matrix Scanner
 	go matrixScanner(keyChan)
 
 	// Goroutine 2: Non-blocking Serial Listener for Commands / Temperature
@@ -186,53 +185,78 @@ func main() {
 	handleEvents(keyChan)
 }
 
-// High-speed, zero-heap-allocation matrix scanner
-func matrixScanner(ch chan<- KeyEvent) {
-	var rawScan [7][10]bool
-	var stateMatrix [7][10]bool
+// Fixed-size matrix state trackers (zero heap allocation)
+var (
+	activeKeys   [7][10]keyboard.Keycode
+	rawScan      [7][10]bool
+	debounceScan [7][10]bool
+)
 
+// High-speed, debounced matrix scanner with atomic per-cell key tracking
+func matrixScanner(ch chan<- KeyEvent) {
 	for {
-		// 1. Single-pass hardware matrix scan
+		// 1. First pass hardware scan
 		for cIdx, cPin := range colPins {
 			cPin.High()
-			time.Sleep(time.Microsecond * 10) // Brief pin settling time
+			time.Sleep(time.Microsecond * 50)
 			for rIdx, rPin := range rowPins {
 				rawScan[rIdx][cIdx] = rPin.Get()
 			}
 			cPin.Low()
 		}
 
-		// 2. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
-		fnActive := rawScan[6][0] || rawScan[6][8]
+		// 2. Brief settling / debounce delay
+		time.Sleep(time.Millisecond * 2)
 
-		// 3. Select active key map
+		// 3. Second pass hardware scan to confirm steady state
+		for cIdx, cPin := range colPins {
+			cPin.High()
+			time.Sleep(time.Microsecond * 50)
+			for rIdx, rPin := range rowPins {
+				debounceScan[rIdx][cIdx] = rPin.Get()
+			}
+			cPin.Low()
+		}
+
+		// 4. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
+		fnActive := (rawScan[6][0] && debounceScan[6][0]) || (rawScan[6][8] && debounceScan[6][8])
+
 		activeMap := &keyMap
 		if fnActive {
 			activeMap = &fnMap
 		}
 
-		// 4. Compare current hardware scan against previous state matrix
+		// 5. Compare current hardware scan against activeKeys matrix
 		for rIdx := 0; rIdx < 7; rIdx++ {
 			for cIdx := 0; cIdx < 10; cIdx++ {
-				pressed := rawScan[rIdx][cIdx]
-				if pressed != stateMatrix[rIdx][cIdx] {
-					stateMatrix[rIdx][cIdx] = pressed
+				pressed := rawScan[rIdx][cIdx] && debounceScan[rIdx][cIdx]
+				currentKey := activeKeys[rIdx][cIdx]
+
+				if pressed && currentKey == 0 {
+					// Key transition: RELEASED -> PRESSED
 					key := activeMap[rIdx][cIdx]
 					if key != 0 {
-						ch <- KeyEvent{Key: key, Pressed: pressed}
-						// Stop breathing animation on any keypress
-						if pressed {
+						activeKeys[rIdx][cIdx] = key
+						if key != keyboard.Keycode(FnKey) {
+							ch <- KeyEvent{Key: key, Pressed: true}
 							select {
 							case breathingChan <- false:
 							default:
 							}
 						}
 					}
+				} else if !pressed && currentKey != 0 {
+					// Key transition: PRESSED -> RELEASED
+					// Always release the EXACT keycode stored during press!
+					if currentKey != keyboard.Keycode(FnKey) {
+						ch <- KeyEvent{Key: currentKey, Pressed: false}
+					}
+					activeKeys[rIdx][cIdx] = 0
 				}
 			}
 		}
 
-		time.Sleep(time.Millisecond * 2)
+		time.Sleep(time.Millisecond * 4)
 	}
 }
 
@@ -250,7 +274,6 @@ func breathingController(controlChan <-chan bool) {
 		}
 
 		if active {
-			// Blinking animation on CapsLock LED (GP22)
 			pinGP22.High()
 			time.Sleep(time.Millisecond * 250)
 			pinGP22.Low()
