@@ -1,80 +1,83 @@
-# PocketTerm35 Firmware & Recovery Guide
+# PocketTerm35 RP2040 Firmware Architecture & Recovery Manual
 
-## 1. TinyGo Custom Firmware Overview
-
-The custom firmware in `pico-keyboard-go/main.go` is a high-performance HID Keyboard and hardware controller compiled with **TinyGo (v0.35.0)** for the Raspberry Pi Pico (RP2040).
-
-### Key Features & Optimizations
-- **Single-Pass Zero-Allocation Matrix Scanner**: Scans the 7x10 key matrix directly into fixed stack memory (`[7][10]bool`), eliminating dynamic heap allocations (`make(map...)`) in the 500Hz loop. Reduces latency to <1ms and prevents TinyGo Garbage Collector pauses.
-- **Hardware PWM LCD Backlight & Audio Volume Control**:
-  - `GP20`: LCD backlight PWM (5kHz). Controllable via `Fn + Z` / `Fn + X` or serial `BRIGHTNESS:UP/DOWN`.
-  - `GP18`: Audio volume PWM (5kHz). Controllable via `Fn + Minus` / `Fn + Equals` or serial `VOL:UP/DOWN`.
-- **Shift Key Macro Shortcuts**:
-  - `ShiftGrave` (`~`): `Fn + H`
-  - `ShiftBackslash` (`|`): `Fn + J`
-  - `ShiftLeftBracket` (`{`): `Fn + K`
-  - `ShiftRightBracket` (`}`): `Fn + L`
-- **Breathing LED Animation**: Non-blocking `breathingController` goroutine on CapsLock LED (`GP22`), triggered by `FnBLControlScreen` (`Fn + Q`) and automatically cancelled on keypress.
-- **Serial USB CDC Interface & ADC Temperature Reading**:
-  - Non-blocking `serialListener` goroutine on USB CDC.
-  - Reads Pico RP2040 internal temperature sensor via ADC (`machine.ReadTemperature()`).
-  - Serial Commands: `TEMP`, `STATUS`, `BRIGHTNESS:UP`, `BRIGHTNESS:DOWN`, `VOL:UP`, `VOL:DOWN`, `HELP`.
+This repository contains the Go source code and build system for replacing the default CircuitPython RP2040 keyboard controller on the Waveshare PocketTerm35 with an optimized **TinyGo** firmware.
 
 ---
 
-## 2. Flashing the TinyGo Firmware
+## 1. System Overview
 
-To compile and flash the TinyGo firmware onto the Raspberry Pi Pico:
+The **Waveshare PocketTerm35** uses a dual-chip architecture:
+1. **Raspberry Pi 5 / 4B**: Main SBC running Linux OS (Raspberry Pi OS, TTY shell `sh`/`bash`, X11/Wayland).
+2. **Raspberry Pi Pico (RP2040)**: Microcontroller managing the 70-key physical matrix, LCD backlight PWM, audio volume PWM, CapsLock LED, Mute output, and Breathing LED.
 
-```bash
-# On PocketTerm35 (Raspberry Pi):
-./flash_firmware.sh
-```
-
-### Manual Flash Procedure via picotool:
-```bash
-# 1. Reset Pico into BOOTLOADER mode (if running CircuitPython):
-python3 -c "
-import serial, time
-try:
-    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
-    ser.write(b'\x03\x03\r\n')
-    time.sleep(0.2)
-    ser.write(b'import microcontroller\r\n')
-    time.sleep(0.1)
-    ser.write(b'microcontroller.on_next_reset(microcontroller.RunMode.BOOTLOADER)\r\n')
-    time.sleep(0.1)
-    ser.write(b'microcontroller.reset()\r\n')
-except Exception:
-    pass
-"
-
-# 2. Flash UF2 binary:
-echo uofofet | sudo -S picotool load ~/Projects/mysystem/pico-keyboard-go/pico_keyboard_firmware.uf2 -x
-```
+Communication between the RP2040 Pico and the Raspberry Pi 5 takes place over an **internal USB HID Keyboard bus**.
 
 ---
 
-## 3. Rollback & Recovery to Original Waveshare CircuitPython Code
+## 2. Reverse Engineering of Waveshare Python Firmware (`waveshare_original_code.py`)
 
-If you ever need to restore the factory Waveshare CircuitPython firmware and original `code.py`:
+### 2.1 Hardware Connections & Peripheral Map
 
-### Recovery Assets Saved on PocketTerm35:
-- **CircuitPython UF2 Firmware**: `~/Projects/mysystem/recovery/adafruit-circuitpython-pico-9.2.4.uf2`
-- **Original Waveshare Python Code**: `waveshare_original_code.py` in this repository.
+| Function | RP2040 Pin | Hardware Mode | Default / Rest Value |
+| :--- | :--- | :--- | :--- |
+| **Matrix Rows (7)** | `GP0` - `GP6` | Digital Input (`Pull.DOWN`) | Active HIGH |
+| **Matrix Columns (10)** | `GP7` - `GP16` | Digital Output | `False` (0V) at rest, `True` (3.3V) on scan |
+| **CapsLock LED** | `GP22` | Digital Output | `False` (Off) |
+| **Audio Mute** | `GP19` | Digital Output | `False` (Unmuted) |
+| **Status / Screen LED** | `GP21` | Digital Output | `False` (Off) |
+| **LCD Backlight PWM** | `GP20` | Hardware PWM (5000Hz) | `duty_cycle = 5000` (~7.6%) |
+| **Audio Volume PWM** | `GP18` | Hardware PWM (5000Hz) | `duty_cycle = 32700` (~50%) |
 
-### Step-by-Step Rollback Procedure:
+---
 
-1. **Reset Pico into BOOTLOADER mode**:
-   - Hold the `BOOTSEL` button on the Pico while plugging in USB, OR reboot via software if accessible.
+### 2.2 Key Dispatching Architecture (Set Difference)
 
-2. **Flash CircuitPython UF2**:
-   ```bash
-   echo uofofet | sudo -S picotool load ~/Projects/mysystem/recovery/adafruit-circuitpython-pico-9.2.4.uf2 -x
-   ```
+CircuitPython evaluates active keypresses using a **Set-Difference Dispatcher**:
+- `current_keys = set(scan_keyboard())`
+- `released_keys = previous_keys - current_keys` $\rightarrow$ calls `kbd.release(key)`
+- `pressed_keys = current_keys - previous_keys` $\rightarrow$ calls `kbd.press(key)` or executes special functions
+- Loop frequency: 100Hz (`time.sleep(0.01)`)
 
-3. **Restore `code.py`**:
-   Once CircuitPython reboots, the Pico exposes a USB drive named `CIRCUITPY` (mounted at `/media/tony/CIRCUITPY` or `/mnt/CIRCUITPY`):
-   ```bash
-   cp /home/tony/Projects/pocketterm35-tinygo/waveshare_original_code.py /media/tony/CIRCUITPY/code.py
-   ```
+---
+
+## 3. TinyGo Conversion Specifications
+
+To achieve 100% feature parity and native Linux TTY `sh` shell compatibility:
+
+1. **Standard 8-Byte USB HID Boot Keyboard Protocol**:
+   - `bInterfaceClass`: `0x03` (HID)
+   - `bInterfaceSubClass`: `0x01` (Boot Interface Subclass)
+   - `bInterfaceProtocol`: `0x01` (Keyboard)
+   - Packet format: `[Modifiers, Reserved(0x00), Key1, Key2, Key3, Key4, Key5, Key6]` without composite Report IDs.
+
+2. **Zero-Allocation Set-Difference Scanner**:
+   - Replicates CircuitPython's set-difference algorithm in Go using stack-allocated structs `KeySet` (`[16]keyboard.Keycode`).
+
+3. **PWM Frequency & Duty Cycle Matching**:
+   - GP20 (Backlight): 5kHz PWM, 5000 initial duty cycle.
+   - GP18 (Audio Volume): 5kHz PWM, 32700 initial duty cycle.
+
+---
+
+## 4. Recovery Procedure (Rollback to Original Factory Firmware)
+
+If you ever need to restore the original Waveshare CircuitPython firmware:
+
+### Step 1: Boot into RP2040 Bootloader
+Reset the USB bus or trigger 1200 baud open on `/dev/ttyACM0`:
+```bash
+python3 -c "import serial; s=serial.Serial('/dev/ttyACM0', 1200); s.close()"
+```
+
+### Step 2: Flash CircuitPython UF2
+```bash
+sudo picotool load adafruit-circuitpython-pico-9.2.4.uf2 -x
+```
+
+### Step 3: Copy `code.py` to `CIRCUITPY` Drive
+```bash
+sudo mkdir -p /mnt/circuitpy
+sudo mount /dev/sda1 /mnt/circuitpy
+sudo cp waveshare_original_code.py /mnt/circuitpy/code.py
+sync
+```
