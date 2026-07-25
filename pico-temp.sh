@@ -12,8 +12,8 @@ get_rpi_temp() {
 P_TEMP=$(get_pico_temp)
 R_TEMP=$(get_rpi_temp)
 
-# 1. GUI Mode (Zenity Desktop Popup)
-if [ "$1" = "--gui" ]; then
+# 1. GUI Mode (Zenity Desktop Popup when double-clicking Desktop Icon)
+if [ "${1:-}" = "--gui" ]; then
     if which zenity >/dev/null 2>&1; then
         zenity --info \
           --title="PocketTerm35 Temperatures" \
@@ -23,29 +23,32 @@ if [ "$1" = "--gui" ]; then
     fi
 fi
 
-# 2. Whiptail TUI Dialog Mode (Tools Menu)
-if [ "$1" = "--tui" ] || [ "$1" != "--loop" ]; then
-    if which whiptail >/dev/null 2>&1; then
-        whiptail --title "PocketTerm35 Temperatures" --msgbox \
-"🌡️ Real-Time Temperature Monitor
+# 2. Continuous Loop Mode (--loop)
+if [ "${1:-}" = "--loop" ]; then
+    clear 2>/dev/null || true
+    echo "=============================================="
+    echo "    🌡️ PocketTerm35 Real-Time Temperature"
+    echo "=============================================="
+    echo " Press Ctrl+C to exit."
+    echo ""
 
-🟢 Raspberry Pi Pico (RP2040):  ${P_TEMP}
-🔴 Raspberry Pi 5 CPU:             ${R_TEMP}" 12 55
-        exit 0
-    fi
+    while true; do
+        P_TEMP=$(get_pico_temp)
+        R_TEMP=$(get_rpi_temp)
+        echo -e "[ $(date +%H:%M:%S) ] 🟢 RP2040 Pico: ${P_TEMP}  |  🔴 RPi 5 CPU: ${R_TEMP}"
+        sleep 2
+    done
+    exit 0
 fi
 
-# 3. Continuous Loop Terminal Mode (--loop)
-clear 2>/dev/null || true
-echo "=============================================="
-echo "    🌡️ PocketTerm35 Real-Time Temperature"
-echo "=============================================="
-echo " Press Ctrl+C to exit."
+# 3. Default Shell / menu.sh Mode (Single Clean Text Output)
 echo ""
-
-while true; do
-    P_TEMP=$(get_pico_temp)
-    R_TEMP=$(get_rpi_temp)
-    echo -e "[ $(date +%H:%M:%S) ] 🟢 RP2040 Pico: ${P_TEMP}  |  🔴 RPi 5 CPU: ${R_TEMP}"
-    sleep 2
-done
+echo "=================================================="
+echo "    🌡️ PocketTerm35 Temperature Summary"
+echo "=================================================="
+echo ""
+echo "  🟢 Raspberry Pi Pico (RP2040):  ${P_TEMP}"
+echo "  🔴 Raspberry Pi 5 CPU:             ${R_TEMP}"
+echo ""
+echo "=================================================="
+echo ""
