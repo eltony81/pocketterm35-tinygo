@@ -1,10 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"machine"
 	"machine/usb/hid/keyboard"
-	"strings"
 	"time"
 )
 
@@ -140,19 +138,7 @@ func adPwmDown() {
 	machine.PWM1.Set(adPWMChan, adPWMVal)
 }
 
-func getPicoTemperature() float32 {
-	milliC := machine.ReadTemperature()
-	temp := float32(milliC) / 1000.0
-	if temp < 0 {
-		temp += 35.0
-	}
-	return temp
-}
-
 func main() {
-	// Initialize ADC
-	machine.InitADC()
-
 	// Initialize GPIO pins
 	for _, pin := range rowPins {
 		pin.Configure(machine.PinConfig{Mode: machine.PinInputPulldown})
@@ -175,10 +161,7 @@ func main() {
 	// Goroutine 1: High speed debounced zero-allocation Matrix Scanner
 	go matrixScanner(keyChan)
 
-	// Goroutine 2: Non-blocking Serial Listener for Commands / Temperature
-	go serialListener()
-
-	// Goroutine 3: Breathing Light Handler
+	// Goroutine 2: Breathing Light Handler
 	go breathingController(breathingChan)
 
 	// Main Loop: USB HID Event Dispatcher
@@ -281,49 +264,6 @@ func breathingController(controlChan <-chan bool) {
 		} else {
 			time.Sleep(time.Millisecond * 100)
 		}
-	}
-}
-
-func serialListener() {
-	var buf [64]byte
-	bufIdx := 0
-
-	for {
-		if machine.Serial.Buffered() > 0 {
-			b, err := machine.Serial.ReadByte()
-			if err == nil {
-				if b == 0x0A || b == 0x0D {
-					if bufIdx > 0 {
-						cmd := strings.TrimSpace(string(buf[:bufIdx]))
-						bufIdx = 0
-						cmdUpper := strings.ToUpper(cmd)
-						switch cmdUpper {
-						case "TEMP", "PICO_TEMP", "STATUS":
-							temp := getPicoTemperature()
-							fmt.Printf("PICO_TEMP: %.2f C\r\n", temp)
-						case "BRIGHTNESS:UP":
-							blPwmUp()
-							fmt.Printf("BRIGHTNESS: %d\r\n", blPWMVal)
-						case "BRIGHTNESS:DOWN":
-							blPwmDown()
-							fmt.Printf("BRIGHTNESS: %d\r\n", blPWMVal)
-						case "VOL:UP":
-							adPwmUp()
-							fmt.Printf("VOL: %d\r\n", adPWMVal)
-						case "VOL:DOWN":
-							adPwmDown()
-							fmt.Printf("VOL: %d\r\n", adPWMVal)
-						case "HELP":
-							fmt.Printf("COMMANDS: TEMP, BRIGHTNESS:UP, BRIGHTNESS:DOWN, VOL:UP, VOL:DOWN, STATUS\r\n")
-						}
-					}
-				} else if bufIdx < len(buf)-1 {
-					buf[bufIdx] = b
-					bufIdx++
-				}
-			}
-		}
-		time.Sleep(time.Millisecond * 10)
 	}
 }
 
