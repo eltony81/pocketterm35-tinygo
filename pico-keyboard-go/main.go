@@ -158,7 +158,7 @@ func main() {
 	// Initialize PWM for LCD Backlight and Audio Volume
 	initPWM()
 
-	// Goroutine 1: High speed debounced zero-allocation Matrix Scanner
+	// Goroutine 1: High speed matrix Scanner
 	go matrixScanner(keyChan)
 
 	// Goroutine 2: Breathing Light Handler
@@ -170,49 +170,35 @@ func main() {
 
 // Fixed-size matrix state trackers (zero heap allocation)
 var (
-	activeKeys   [7][10]keyboard.Keycode
-	rawScan      [7][10]bool
-	debounceScan [7][10]bool
+	activeKeys [7][10]keyboard.Keycode
+	rawScan    [7][10]bool
 )
 
-// High-speed, debounced matrix scanner with atomic per-cell key tracking
+// High-speed matrix scanner with atomic per-cell key tracking
 func matrixScanner(ch chan<- KeyEvent) {
 	for {
-		// 1. First pass hardware scan
+		// 1. Hardware matrix scan
 		for cIdx, cPin := range colPins {
 			cPin.High()
-			time.Sleep(time.Microsecond * 50)
+			time.Sleep(time.Microsecond * 20)
 			for rIdx, rPin := range rowPins {
 				rawScan[rIdx][cIdx] = rPin.Get()
 			}
 			cPin.Low()
 		}
 
-		// 2. Brief settling / debounce delay
-		time.Sleep(time.Millisecond * 2)
-
-		// 3. Second pass hardware scan to confirm steady state
-		for cIdx, cPin := range colPins {
-			cPin.High()
-			time.Sleep(time.Microsecond * 50)
-			for rIdx, rPin := range rowPins {
-				debounceScan[rIdx][cIdx] = rPin.Get()
-			}
-			cPin.Low()
-		}
-
-		// 4. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
-		fnActive := (rawScan[6][0] && debounceScan[6][0]) || (rawScan[6][8] && debounceScan[6][8])
+		// 2. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
+		fnActive := rawScan[6][0] || rawScan[6][8]
 
 		activeMap := &keyMap
 		if fnActive {
 			activeMap = &fnMap
 		}
 
-		// 5. Compare current hardware scan against activeKeys matrix
+		// 3. Compare current hardware scan against activeKeys matrix
 		for rIdx := 0; rIdx < 7; rIdx++ {
 			for cIdx := 0; cIdx < 10; cIdx++ {
-				pressed := rawScan[rIdx][cIdx] && debounceScan[rIdx][cIdx]
+				pressed := rawScan[rIdx][cIdx]
 				currentKey := activeKeys[rIdx][cIdx]
 
 				if pressed && currentKey == 0 {
@@ -239,7 +225,7 @@ func matrixScanner(ch chan<- KeyEvent) {
 			}
 		}
 
-		time.Sleep(time.Millisecond * 4)
+		time.Sleep(time.Millisecond * 2)
 	}
 }
 
