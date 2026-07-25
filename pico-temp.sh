@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Real-time Pico & RPi 5 Temperature Monitor
 
+# Reset terminal attributes and colors so text is never black-on-black
+stty sane 2>/dev/null || true
+printf "\033[0m"
+
 get_pico_temp() {
     python3 /home/tony/tools/get_pico_temp.py
 }
@@ -25,7 +29,7 @@ fi
 
 # 2. Continuous Loop Mode (--loop)
 if [ "${1:-}" = "--loop" ]; then
-    clear 2>/dev/null || true
+    printf "\033[0m\033[2J\033[H"
     echo "=============================================="
     echo "    🌡️ PocketTerm35 Real-Time Temperature"
     echo "=============================================="
@@ -35,20 +39,21 @@ if [ "${1:-}" = "--loop" ]; then
     while true; do
         P_TEMP=$(get_pico_temp)
         R_TEMP=$(get_rpi_temp)
-        echo -e "[ $(date +%H:%M:%S) ] 🟢 RP2040 Pico: ${P_TEMP}  |  🔴 RPi 5 CPU: ${R_TEMP}"
+        echo -e "[ $(date +%H:%M:%S) ] \033[1;32m🟢 RP2040 Pico: ${P_TEMP}\033[0m  |  \033[1;31m🔴 RPi 5 CPU: ${R_TEMP}\033[0m"
         sleep 2
     done
     exit 0
 fi
 
-# 3. Default Shell / menu.sh Mode (Single Clean Text Output)
+# 3. Default Shell / menu.sh Mode (High-contrast bright ANSI text)
+printf "\033[0m"
 echo ""
-echo "=================================================="
-echo "    🌡️ PocketTerm35 Temperature Summary"
-echo "=================================================="
+echo -e "\033[1;36m==================================================\033[0m"
+echo -e "\033[1;37m    🌡️ PocketTerm35 Temperature Summary\033[0m"
+echo -e "\033[1;36m==================================================\033[0m"
 echo ""
-echo "  🟢 Raspberry Pi Pico (RP2040):  ${P_TEMP}"
-echo "  🔴 Raspberry Pi 5 CPU:             ${R_TEMP}"
+echo -e "  \033[1;32m🟢 Raspberry Pi Pico (RP2040):\033[0m  \033[1;37m${P_TEMP}\033[0m"
+echo -e "  \033[1;31m🔴 Raspberry Pi 5 CPU:\033[0m             \033[1;37m${R_TEMP}\033[0m"
 echo ""
-echo "=================================================="
+echo -e "\033[1;36m==================================================\033[0m"
 echo ""
