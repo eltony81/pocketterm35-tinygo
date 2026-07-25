@@ -33,13 +33,22 @@ var colPins = []machine.Pin{
 	machine.GP7, machine.GP8, machine.GP9, machine.GP10, machine.GP11, machine.GP12, machine.GP13, machine.GP14, machine.GP15, machine.GP16,
 }
 
-// Special status LED pins
+// Special status LED and PWM pins
 var (
 	pinGP22 = machine.GP22 // CapsLock LED
 	pinGP19 = machine.GP19 // Audio Mute
 	pinGP21 = machine.GP21 // Breathing / Status LED
-	pinGP20 = machine.GP20 // LED PWM
-	pinGP18 = machine.GP18 // Audio PWM
+	pinGP20 = machine.GP20 // LCD Backlight PWM
+	pinGP18 = machine.GP18 // Audio Volume PWM
+)
+
+// PWM Hardware state
+var (
+	blPWMChan uint8
+	blPWMVal  uint32 = 32767 // Initial LCD backlight duty cycle (~50%)
+
+	adPWMChan uint8
+	adPWMVal  uint32 = 32700 // Initial audio duty cycle
 )
 
 // Default Key Matrix Map (7 rows x 10 cols)
@@ -60,13 +69,75 @@ var fnMap = [7][10]keyboard.Keycode{
 	{keyboard.Keycode(FnBLControlScreen), keyboard.KeyUp, keyboard.KeyEsc, keyboard.KeyHome, keyboard.KeyPageUp, keyboard.KeyPageDown, keyboard.KeyEnd, keyboard.KeyInsert, keyboard.KeyDelete, keyboard.KeyF11},
 	{keyboard.KeyLeft, keyboard.KeyDown, keyboard.KeyRight, keyboard.KeyF12, keyboard.Keycode(FnLockScreen), keyboard.Keycode(ShiftGrave), keyboard.Keycode(ShiftBackslash), keyboard.Keycode(ShiftLeftBracket), keyboard.Keycode(ShiftRightBracket), keyboard.KeyDelete},
 	{keyboard.Keycode(FnBLPWMDown), keyboard.Keycode(FnBLPWMUp), keyboard.KeyTilde, keyboard.KeyBackslash, keyboard.KeyLeftBrace, keyboard.KeyRightBrace, keyboard.KeyMenu, keyboard.KeySlash, keyboard.KeyEnter, 0},
-	{keyboard.KeyTab, keyboard.KeyCapsLock, keyboard.Keycode(FnVolDown), keyboard.Keycode(FnVolUp), keyboard.KeySemicolon, keyboard.KeyQuote, keyboard.KeyComma, keyboard.KeyPeriod, keyboard.KeyLeftShift, 0},
+	{keyboard.Keycode(FnMute), keyboard.KeyCapsLock, keyboard.Keycode(FnVolDown), keyboard.Keycode(FnVolUp), keyboard.KeySemicolon, keyboard.KeyQuote, keyboard.KeyComma, keyboard.KeyPeriod, keyboard.KeyLeftShift, 0},
 	{keyboard.Keycode(FnKey), keyboard.KeyLeftCtrl, keyboard.KeyLeftAlt, keyboard.KeyPrintscreen, keyboard.KeySpace, keyboard.KeyPause, keyboard.KeyRightAlt, keyboard.KeyLeftGUI, keyboard.Keycode(FnKey), 0},
 }
 
 type KeyEvent struct {
 	Key     keyboard.Keycode
 	Pressed bool
+}
+
+// Global control channels
+var (
+	keyChan       = make(chan KeyEvent, 64)
+	breathingChan = make(chan bool, 1)
+)
+
+func initPWM() {
+	// Backlight PWM (GP20)
+	pinGP20.Configure(machine.PinConfig{Mode: machine.PinPWM})
+	machine.PWM2.Configure(machine.PWMConfig{Period: 1000000000 / 5000}) // 5kHz
+	blPWMChan, _ = machine.PWM2.Channel(pinGP20)
+	machine.PWM2.Set(blPWMChan, blPWMVal)
+
+	// Audio PWM (GP18)
+	pinGP18.Configure(machine.PinConfig{Mode: machine.PinPWM})
+	machine.PWM1.Configure(machine.PWMConfig{Period: 1000000000 / 5000}) // 5kHz
+	adPWMChan, _ = machine.PWM1.Channel(pinGP18)
+	machine.PWM1.Set(adPWMChan, adPWMVal)
+}
+
+func blPwmUp() {
+	if blPWMVal >= 65535 {
+		blPWMVal = 65535
+	} else {
+		blPWMVal += 6553
+		if blPWMVal > 65535 {
+			blPWMVal = 65535
+		}
+	}
+	machine.PWM2.Set(blPWMChan, blPWMVal)
+}
+
+func blPwmDown() {
+	if blPWMVal <= 6553 {
+		blPWMVal = 0
+	} else {
+		blPWMVal -= 6553
+	}
+	machine.PWM2.Set(blPWMChan, blPWMVal)
+}
+
+func adPwmUp() {
+	if adPWMVal >= 65535 {
+		adPWMVal = 65535
+	} else {
+		adPWMVal += 6553
+		if adPWMVal > 65535 {
+			adPWMVal = 65535
+		}
+	}
+	machine.PWM1.Set(adPWMChan, adPWMVal)
+}
+
+func adPwmDown() {
+	if adPWMVal <= 6553 {
+		adPWMVal = 0
+	} else {
+		adPWMVal -= 6553
+	}
+	machine.PWM1.Set(adPWMChan, adPWMVal)
 }
 
 func getPicoTemperature() float32 {
@@ -94,82 +165,94 @@ func main() {
 	pinGP19.Low()
 	pinGP21.Low()
 
-	keyChan := make(chan KeyEvent, 32)
+	// Initialize PWM for LCD Backlight and Audio Volume
+	initPWM()
 
-	// Goroutine 1: High speed Matrix Scanner
+	// Goroutine 1: High speed zero-allocation Matrix Scanner
 	go matrixScanner(keyChan)
 
-	// Goroutine 2: Non-blocking Serial Listener for Temperature requests
+	// Goroutine 2: Non-blocking Serial Listener for Commands / Temperature
 	go serialListener()
+
+	// Goroutine 3: Breathing Light Handler
+	go breathingController(breathingChan)
 
 	// Main Loop: USB HID Event Dispatcher
 	handleEvents(keyChan)
 }
 
+// High-speed, zero-heap-allocation matrix scanner
 func matrixScanner(ch chan<- KeyEvent) {
-	activeKeys := make(map[keyboard.Keycode]bool)
+	var rawScan [7][10]bool
+	var stateMatrix [7][10]bool
 
 	for {
-		fnActive := false
-		pressedThisScan := make(map[keyboard.Keycode]bool)
-
-		// 1. Scan for Fn Key first
+		// 1. Single-pass hardware matrix scan
 		for cIdx, cPin := range colPins {
 			cPin.High()
+			time.Sleep(time.Microsecond * 10) // Brief pin settling time
 			for rIdx, rPin := range rowPins {
-				if rPin.Get() {
-					time.Sleep(time.Microsecond * 50)
-					if rPin.Get() {
-						key := keyMap[rIdx][cIdx]
-						if key == keyboard.Keycode(FnKey) {
-							fnActive = true
-						}
-					}
-				}
+				rawScan[rIdx][cIdx] = rPin.Get()
 			}
 			cPin.Low()
 		}
 
-		// 2. Select active map based on Fn state
-		activeMap := keyMap
+		// 2. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
+		fnActive := rawScan[6][0] || rawScan[6][8]
+
+		// 3. Select active key map
+		activeMap := &keyMap
 		if fnActive {
-			activeMap = fnMap
+			activeMap = &fnMap
 		}
 
-		// 3. Scan matrix for all pressed keys
-		for cIdx, cPin := range colPins {
-			cPin.High()
-			for rIdx, rPin := range rowPins {
-				if rPin.Get() {
-					time.Sleep(time.Microsecond * 50)
-					if rPin.Get() {
-						key := activeMap[rIdx][cIdx]
-						if key != 0 {
-							pressedThisScan[key] = true
+		// 4. Compare current hardware scan against previous state matrix
+		for rIdx := 0; rIdx < 7; rIdx++ {
+			for cIdx := 0; cIdx < 10; cIdx++ {
+				pressed := rawScan[rIdx][cIdx]
+				if pressed != stateMatrix[rIdx][cIdx] {
+					stateMatrix[rIdx][cIdx] = pressed
+					key := activeMap[rIdx][cIdx]
+					if key != 0 {
+						ch <- KeyEvent{Key: key, Pressed: pressed}
+						// Stop breathing animation on any keypress
+						if pressed {
+							select {
+							case breathingChan <- false:
+							default:
+							}
 						}
 					}
 				}
-			}
-			cPin.Low()
-		}
-
-		// 4. Send Key Press Events
-		for key := range pressedThisScan {
-			if !activeKeys[key] {
-				activeKeys[key] = true
-				ch <- KeyEvent{Key: key, Pressed: true}
-			}
-		}
-
-		// 5. Send Key Release Events
-		for key := range activeKeys {
-			if !pressedThisScan[key] {
-				delete(activeKeys, key)
-				ch <- KeyEvent{Key: key, Pressed: false}
 			}
 		}
 
 		time.Sleep(time.Millisecond * 2)
+	}
+}
+
+// Non-blocking breathing light controller
+func breathingController(controlChan <-chan bool) {
+	active := false
+	for {
+		select {
+		case state := <-controlChan:
+			active = state
+			if !active {
+				pinGP22.Low()
+			}
+		default:
+		}
+
+		if active {
+			// Blinking animation on CapsLock LED (GP22)
+			pinGP22.High()
+			time.Sleep(time.Millisecond * 250)
+			pinGP22.Low()
+			time.Sleep(time.Millisecond * 250)
+		} else {
+			time.Sleep(time.Millisecond * 100)
+		}
 	}
 }
 
@@ -186,9 +269,24 @@ func serialListener() {
 						cmd := strings.TrimSpace(string(buf[:bufIdx]))
 						bufIdx = 0
 						cmdUpper := strings.ToUpper(cmd)
-						if cmdUpper == "TEMP" || cmdUpper == "PICO_TEMP" || cmdUpper == "STATUS" {
+						switch cmdUpper {
+						case "TEMP", "PICO_TEMP", "STATUS":
 							temp := getPicoTemperature()
 							fmt.Printf("PICO_TEMP: %.2f C\r\n", temp)
+						case "BRIGHTNESS:UP":
+							blPwmUp()
+							fmt.Printf("BRIGHTNESS: %d\r\n", blPWMVal)
+						case "BRIGHTNESS:DOWN":
+							blPwmDown()
+							fmt.Printf("BRIGHTNESS: %d\r\n", blPWMVal)
+						case "VOL:UP":
+							adPwmUp()
+							fmt.Printf("VOL: %d\r\n", adPWMVal)
+						case "VOL:DOWN":
+							adPwmDown()
+							fmt.Printf("VOL: %d\r\n", adPWMVal)
+						case "HELP":
+							fmt.Printf("COMMANDS: TEMP, BRIGHTNESS:UP, BRIGHTNESS:DOWN, VOL:UP, VOL:DOWN, STATUS\r\n")
 						}
 					}
 				} else if bufIdx < len(buf)-1 {
@@ -197,7 +295,7 @@ func serialListener() {
 				}
 			}
 		}
-		time.Sleep(time.Millisecond * 20)
+		time.Sleep(time.Millisecond * 10)
 	}
 }
 
@@ -214,6 +312,38 @@ func handleEvents(ch <-chan KeyEvent) {
 				pinGP19.Set(!pinGP19.Get())
 			case keyboard.Keycode(FnBLControlScreen):
 				pinGP21.Set(!pinGP21.Get())
+				select {
+				case breathingChan <- true:
+				default:
+				}
+			case keyboard.Keycode(FnBLPWMUp):
+				blPwmUp()
+			case keyboard.Keycode(FnBLPWMDown):
+				blPwmDown()
+			case keyboard.Keycode(FnVolUp):
+				adPwmUp()
+			case keyboard.Keycode(FnVolDown):
+				adPwmDown()
+			case keyboard.Keycode(ShiftGrave): // ~
+				kb.Down(keyboard.KeyLeftShift)
+				kb.Down(keyboard.KeyTilde)
+				kb.Up(keyboard.KeyTilde)
+				kb.Up(keyboard.KeyLeftShift)
+			case keyboard.Keycode(ShiftBackslash): // |
+				kb.Down(keyboard.KeyLeftShift)
+				kb.Down(keyboard.KeyBackslash)
+				kb.Up(keyboard.KeyBackslash)
+				kb.Up(keyboard.KeyLeftShift)
+			case keyboard.Keycode(ShiftLeftBracket): // {
+				kb.Down(keyboard.KeyLeftShift)
+				kb.Down(keyboard.KeyLeftBrace)
+				kb.Up(keyboard.KeyLeftBrace)
+				kb.Up(keyboard.KeyLeftShift)
+			case keyboard.Keycode(ShiftRightBracket): // }
+				kb.Down(keyboard.KeyLeftShift)
+				kb.Down(keyboard.KeyRightBrace)
+				kb.Up(keyboard.KeyRightBrace)
+				kb.Up(keyboard.KeyLeftShift)
 			case keyboard.Keycode(FnLockScreen):
 				kb.Down(keyboard.KeyLeftGUI)
 				kb.Down(keyboard.KeyL)
