@@ -142,7 +142,12 @@ func adPwmDown() {
 
 func getPicoTemperature() float32 {
 	milliC := machine.ReadTemperature()
-	return float32(milliC) / 1000.0
+	temp := float32(milliC) / 1000.0
+	// RP2040 internal sensor VREF offset calibration
+	if temp < 0 {
+		temp += 35.0
+	}
+	return temp
 }
 
 func main() {
