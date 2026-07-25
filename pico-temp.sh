@@ -9,11 +9,12 @@ get_rpi_temp() {
     vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A"
 }
 
-# GUI Mode ONLY if explicitly requested via --gui
+P_TEMP=$(get_pico_temp)
+R_TEMP=$(get_rpi_temp)
+
+# 1. GUI Mode (Zenity Desktop Popup)
 if [ "$1" = "--gui" ]; then
     if which zenity >/dev/null 2>&1; then
-        P_TEMP=$(get_pico_temp)
-        R_TEMP=$(get_rpi_temp)
         zenity --info \
           --title="PocketTerm35 Temperatures" \
           --text="<b>🌡️ PocketTerm35 Temperatures</b>\n\n🟢 <b>Raspberry Pi Pico (RP2040):</b>  ${P_TEMP}\n🔴 <b>Raspberry Pi 5 CPU:</b>             ${R_TEMP}" \
@@ -22,7 +23,19 @@ if [ "$1" = "--gui" ]; then
     fi
 fi
 
-# Terminal Mode (Shell Console / TUI)
+# 2. Whiptail TUI Dialog Mode (Tools Menu)
+if [ "$1" = "--tui" ] || [ "$1" != "--loop" ]; then
+    if which whiptail >/dev/null 2>&1; then
+        whiptail --title "PocketTerm35 Temperatures" --msgbox \
+"🌡️ Real-Time Temperature Monitor
+
+🟢 Raspberry Pi Pico (RP2040):  ${P_TEMP}
+🔴 Raspberry Pi 5 CPU:             ${R_TEMP}" 12 55
+        exit 0
+    fi
+fi
+
+# 3. Continuous Loop Terminal Mode (--loop)
 clear 2>/dev/null || true
 echo "=============================================="
 echo "    🌡️ PocketTerm35 Real-Time Temperature"
@@ -33,6 +46,6 @@ echo ""
 while true; do
     P_TEMP=$(get_pico_temp)
     R_TEMP=$(get_rpi_temp)
-    printf "\r[ %s ]  🟢 RP2040 Pico: %-10s | 🔴 RPi 5 CPU: %-10s" "$(date +%H:%M:%S)" "$P_TEMP" "$R_TEMP"
+    echo -e "[ $(date +%H:%M:%S) ] 🟢 RP2040 Pico: ${P_TEMP}  |  🔴 RPi 5 CPU: ${R_TEMP}"
     sleep 2
 done
