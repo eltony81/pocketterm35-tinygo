@@ -71,15 +71,10 @@ var fnMap = [7][10]keyboard.Keycode{
 	{keyboard.Keycode(FnKey), keyboard.KeyLeftCtrl, keyboard.KeyLeftAlt, keyboard.KeyPrintscreen, keyboard.KeySpace, keyboard.KeyPause, keyboard.KeyRightAlt, keyboard.KeyLeftGUI, keyboard.Keycode(FnKey), 0},
 }
 
-type KeyEvent struct {
-	Key     keyboard.Keycode
-	Pressed bool
-}
-
-// Global control channels
+// Fixed-size matrix state trackers (zero heap allocation)
 var (
-	keyChan       = make(chan KeyEvent, 64)
-	breathingChan = make(chan bool, 1)
+	activeKeys [7][10]keyboard.Keycode
+	rawScan    [7][10]bool
 )
 
 func initPWM() {
@@ -138,13 +133,88 @@ func adPwmDown() {
 	machine.PWM1.Set(adPWMChan, adPWMVal)
 }
 
+func dispatchKeyEvent(kb *keyboard.Port, key keyboard.Keycode, pressed bool) {
+	if pressed {
+		switch key {
+		case keyboard.KeyCapsLock:
+			pinGP22.Set(!pinGP22.Get())
+			kb.Down(keyboard.KeyCapsLock)
+			time.Sleep(time.Millisecond * 10)
+			kb.Up(keyboard.KeyCapsLock)
+		case keyboard.Keycode(FnMute):
+			pinGP19.Set(!pinGP19.Get())
+		case keyboard.Keycode(FnBLControlScreen):
+			pinGP21.Set(!pinGP21.Get())
+		case keyboard.Keycode(FnBLPWMUp):
+			blPwmUp()
+		case keyboard.Keycode(FnBLPWMDown):
+			blPwmDown()
+		case keyboard.Keycode(FnVolUp):
+			adPwmUp()
+		case keyboard.Keycode(FnVolDown):
+			adPwmDown()
+		case keyboard.Keycode(ShiftGrave): // ~
+			kb.Down(keyboard.KeyLeftShift)
+			time.Sleep(time.Millisecond * 5)
+			kb.Down(keyboard.KeyTilde)
+			time.Sleep(time.Millisecond * 10)
+			kb.Up(keyboard.KeyTilde)
+			time.Sleep(time.Millisecond * 5)
+			kb.Up(keyboard.KeyLeftShift)
+		case keyboard.Keycode(ShiftBackslash): // |
+			kb.Down(keyboard.KeyLeftShift)
+			time.Sleep(time.Millisecond * 5)
+			kb.Down(keyboard.KeyBackslash)
+			time.Sleep(time.Millisecond * 10)
+			kb.Up(keyboard.KeyBackslash)
+			time.Sleep(time.Millisecond * 5)
+			kb.Up(keyboard.KeyLeftShift)
+		case keyboard.Keycode(ShiftLeftBracket): // {
+			kb.Down(keyboard.KeyLeftShift)
+			time.Sleep(time.Millisecond * 5)
+			kb.Down(keyboard.KeyLeftBrace)
+			time.Sleep(time.Millisecond * 10)
+			kb.Up(keyboard.KeyLeftBrace)
+			time.Sleep(time.Millisecond * 5)
+			kb.Up(keyboard.KeyLeftShift)
+		case keyboard.Keycode(ShiftRightBracket): // }
+			kb.Down(keyboard.KeyLeftShift)
+			time.Sleep(time.Millisecond * 5)
+			kb.Down(keyboard.KeyRightBrace)
+			time.Sleep(time.Millisecond * 10)
+			kb.Up(keyboard.KeyRightBrace)
+			time.Sleep(time.Millisecond * 5)
+			kb.Up(keyboard.KeyLeftShift)
+		case keyboard.Keycode(FnLockScreen):
+			kb.Down(keyboard.KeyLeftGUI)
+			time.Sleep(time.Millisecond * 5)
+			kb.Down(keyboard.KeyL)
+			time.Sleep(time.Millisecond * 10)
+			kb.Up(keyboard.KeyL)
+			time.Sleep(time.Millisecond * 5)
+			kb.Up(keyboard.KeyLeftGUI)
+		default:
+			if key < 0x1000 {
+				kb.Down(key)
+			}
+		}
+	} else {
+		if key < 0x1000 {
+			kb.Up(key)
+		}
+	}
+}
+
 func main() {
-	// Initialize GPIO pins
+	// 1. Initialize USB HID keyboard instance FIRST
+	kb := keyboard.Port()
+
+	// 2. Initialize GPIO pins
 	for _, pin := range rowPins {
 		pin.Configure(machine.PinConfig{Mode: machine.PinInputPulldown})
 	}
 	for _, pin := range colPins {
-		pin.Configure(machine.PinConfig{Mode: machine.PinInput}) // Inactive columns start in Tri-State High-Z
+		pin.Configure(machine.PinConfig{Mode: machine.PinInput})
 	}
 
 	pinGP22.Configure(machine.PinConfig{Mode: machine.PinOutput})
@@ -154,38 +224,22 @@ func main() {
 	pinGP19.Low()
 	pinGP21.Low()
 
-	// Initialize PWM for LCD Backlight and Audio Volume
+	// 3. Initialize PWM for LCD Backlight and Audio Volume
 	initPWM()
 
-	// Goroutine 1: High speed Tri-State matrix Scanner
-	go matrixScanner(keyChan)
+	time.Sleep(time.Second * 1)
 
-	// Goroutine 2: Breathing Light Handler
-	go breathingController(breathingChan)
-
-	// Main Loop: USB HID Event Dispatcher
-	handleEvents(keyChan)
-}
-
-// Fixed-size matrix state trackers (zero heap allocation)
-var (
-	activeKeys [7][10]keyboard.Keycode
-	rawScan    [7][10]bool
-)
-
-// High-speed matrix scanner with Tri-State High-Z column switching and atomic key tracking
-func matrixScanner(ch chan<- KeyEvent) {
+	// 4. Main Synchronous Loop
 	for {
-		// 1. Clear raw scan matrix
+		// Clear raw scan matrix
 		for rIdx := 0; rIdx < 7; rIdx++ {
 			for cIdx := 0; cIdx < 10; cIdx++ {
 				rawScan[rIdx][cIdx] = false
 			}
 		}
 
-		// 2. Tri-state hardware matrix scan
+		// Tri-state hardware matrix scan
 		for cIdx, cPin := range colPins {
-			// Drive active column HIGH (Output)
 			cPin.Configure(machine.PinConfig{Mode: machine.PinOutput})
 			cPin.High()
 			time.Sleep(time.Microsecond * 50)
@@ -196,11 +250,10 @@ func matrixScanner(ch chan<- KeyEvent) {
 				}
 			}
 
-			// Return column to INPUT (High-Z float) so inactive columns don't pull rows down
 			cPin.Configure(machine.PinConfig{Mode: machine.PinInput})
 		}
 
-		// 3. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
+		// Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
 		fnActive := rawScan[6][0] || rawScan[6][8]
 
 		activeMap := &keyMap
@@ -208,36 +261,23 @@ func matrixScanner(ch chan<- KeyEvent) {
 			activeMap = &fnMap
 		}
 
-		// 4. Compare current hardware scan against activeKeys matrix
+		// Update key states & dispatch USB HID events
 		for rIdx := 0; rIdx < 7; rIdx++ {
 			for cIdx := 0; cIdx < 10; cIdx++ {
 				pressed := rawScan[rIdx][cIdx]
 				currentKey := activeKeys[rIdx][cIdx]
 
 				if pressed && currentKey == 0 {
-					// Key transition: RELEASED -> PRESSED
 					key := activeMap[rIdx][cIdx]
 					if key != 0 {
 						activeKeys[rIdx][cIdx] = key
 						if key != keyboard.Keycode(FnKey) {
-							select {
-							case ch <- KeyEvent{Key: key, Pressed: true}:
-							default:
-							}
-							select {
-							case breathingChan <- false:
-							default:
-							}
+							dispatchKeyEvent(kb, key, true)
 						}
 					}
 				} else if !pressed && currentKey != 0 {
-					// Key transition: PRESSED -> RELEASED
-					// Always release the EXACT keycode stored during press!
 					if currentKey != keyboard.Keycode(FnKey) {
-						select {
-						case ch <- KeyEvent{Key: currentKey, Pressed: false}:
-						default:
-						}
+						dispatchKeyEvent(kb, currentKey, false)
 					}
 					activeKeys[rIdx][cIdx] = 0
 				}
@@ -245,110 +285,5 @@ func matrixScanner(ch chan<- KeyEvent) {
 		}
 
 		time.Sleep(time.Millisecond * 10)
-	}
-}
-
-// Non-blocking breathing light controller
-func breathingController(controlChan <-chan bool) {
-	active := false
-	for {
-		select {
-		case state := <-controlChan:
-			active = state
-			if !active {
-				pinGP22.Low()
-			}
-		default:
-		}
-
-		if active {
-			pinGP22.High()
-			time.Sleep(time.Millisecond * 250)
-			pinGP22.Low()
-			time.Sleep(time.Millisecond * 250)
-		} else {
-			time.Sleep(time.Millisecond * 100)
-		}
-	}
-}
-
-func handleEvents(ch <-chan KeyEvent) {
-	kb := keyboard.Port()
-	for evt := range ch {
-		key := evt.Key
-		if evt.Pressed {
-			switch key {
-			case keyboard.KeyCapsLock:
-				pinGP22.Set(!pinGP22.Get())
-				kb.Down(keyboard.KeyCapsLock)
-				time.Sleep(time.Millisecond * 10)
-				kb.Up(keyboard.KeyCapsLock)
-			case keyboard.Keycode(FnMute):
-				pinGP19.Set(!pinGP19.Get())
-			case keyboard.Keycode(FnBLControlScreen):
-				pinGP21.Set(!pinGP21.Get())
-				select {
-				case breathingChan <- true:
-				default:
-				}
-			case keyboard.Keycode(FnBLPWMUp):
-				blPwmUp()
-			case keyboard.Keycode(FnBLPWMDown):
-				blPwmDown()
-			case keyboard.Keycode(FnVolUp):
-				adPwmUp()
-			case keyboard.Keycode(FnVolDown):
-				adPwmDown()
-			case keyboard.Keycode(ShiftGrave): // ~
-				kb.Down(keyboard.KeyLeftShift)
-				time.Sleep(time.Millisecond * 5)
-				kb.Down(keyboard.KeyTilde)
-				time.Sleep(time.Millisecond * 10)
-				kb.Up(keyboard.KeyTilde)
-				time.Sleep(time.Millisecond * 5)
-				kb.Up(keyboard.KeyLeftShift)
-			case keyboard.Keycode(ShiftBackslash): // |
-				kb.Down(keyboard.KeyLeftShift)
-				time.Sleep(time.Millisecond * 5)
-				kb.Down(keyboard.KeyBackslash)
-				time.Sleep(time.Millisecond * 10)
-				kb.Up(keyboard.KeyBackslash)
-				time.Sleep(time.Millisecond * 5)
-				kb.Up(keyboard.KeyLeftShift)
-			case keyboard.Keycode(ShiftLeftBracket): // {
-				kb.Down(keyboard.KeyLeftShift)
-				time.Sleep(time.Millisecond * 5)
-				kb.Down(keyboard.KeyLeftBrace)
-				time.Sleep(time.Millisecond * 10)
-				kb.Up(keyboard.KeyLeftBrace)
-				time.Sleep(time.Millisecond * 5)
-				kb.Up(keyboard.KeyLeftShift)
-			case keyboard.Keycode(ShiftRightBracket): // }
-				kb.Down(keyboard.KeyLeftShift)
-				time.Sleep(time.Millisecond * 5)
-				kb.Down(keyboard.KeyRightBrace)
-				time.Sleep(time.Millisecond * 10)
-				kb.Up(keyboard.KeyRightBrace)
-				time.Sleep(time.Millisecond * 5)
-				kb.Up(keyboard.KeyLeftShift)
-			case keyboard.Keycode(FnLockScreen):
-				kb.Down(keyboard.KeyLeftGUI)
-				time.Sleep(time.Millisecond * 5)
-				kb.Down(keyboard.KeyL)
-				time.Sleep(time.Millisecond * 10)
-				kb.Up(keyboard.KeyL)
-				time.Sleep(time.Millisecond * 5)
-				kb.Up(keyboard.KeyLeftGUI)
-			default:
-				if key < 0x1000 {
-					kb.Down(key)
-				}
-			}
-		} else {
-			if key < 0x1000 {
-				kb.Up(key)
-			}
-		}
-		time.Sleep(time.Millisecond * 2)
 	}
 }
