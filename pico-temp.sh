@@ -2,21 +2,7 @@
 # Real-time Pico & RPi 5 Temperature Monitor
 
 get_pico_temp() {
-    python3 -c "
-import serial, time
-try:
-    ser = serial.Serial(/dev/ttyACM0, 115200, timeout=0.3)
-    ser.write(bTEMPrn)
-    time.sleep(0.1)
-    resp = ser.read_all().decode(utf-8, errors=ignore)
-    for line in resp.splitlines():
-        if PICO_TEMP: in line:
-            print(line.split(PICO_TEMP:)[1].strip())
-            exit(0)
-    print(N/A)
-except Exception:
-    print(N/A)
-"
+    python3 /home/tony/tools/get_pico_temp.py
 }
 
 get_rpi_temp() {
