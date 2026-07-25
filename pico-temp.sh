@@ -5,9 +5,9 @@ get_pico_temp() {
     python3 -c "
 import serial, time
 try:
-    ser = serial.Serial(/dev/ttyACM0, 115200, timeout=0.4)
+    ser = serial.Serial(/dev/ttyACM0, 115200, timeout=0.3)
     ser.write(bTEMPrn)
-    time.sleep(0.15)
+    time.sleep(0.1)
     resp = ser.read_all().decode(utf-8, errors=ignore)
     for line in resp.splitlines():
         if PICO_TEMP: in line:
@@ -23,7 +23,8 @@ get_rpi_temp() {
     vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A"
 }
 
-if [ "$1" = "--gui" ] || [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+# GUI Mode ONLY if explicitly requested via --gui
+if [ "$1" = "--gui" ]; then
     if which zenity >/dev/null 2>&1; then
         P_TEMP=$(get_pico_temp)
         R_TEMP=$(get_rpi_temp)
@@ -35,7 +36,7 @@ if [ "$1" = "--gui" ] || [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
     fi
 fi
 
-# Terminal Mode
+# Terminal Mode (Shell Console / TUI)
 clear
 echo "=============================================="
 echo "    🌡️ PocketTerm35 Real-Time Temperature"
@@ -46,6 +47,6 @@ echo ""
 while true; do
     P_TEMP=$(get_pico_temp)
     R_TEMP=$(get_rpi_temp)
-    printf "\r[ %s ] 🟢 RP2040 Pico Temp: %-10s | 🔴 RPi 5 CPU Temp: %-10s" "$(date +%H:%M:%S)" "$P_TEMP" "$R_TEMP"
+    printf "\r[ %s ]  🟢 RP2040 Pico: %-10s | 🔴 RPi 5 CPU: %-10s" "$(date +%H:%M:%S)" "$P_TEMP" "$R_TEMP"
     sleep 2
 done
