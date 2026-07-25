@@ -144,8 +144,7 @@ func main() {
 		pin.Configure(machine.PinConfig{Mode: machine.PinInputPulldown})
 	}
 	for _, pin := range colPins {
-		pin.Configure(machine.PinConfig{Mode: machine.PinOutput})
-		pin.Low()
+		pin.Configure(machine.PinConfig{Mode: machine.PinInput}) // Inactive columns start in Tri-State High-Z
 	}
 
 	pinGP22.Configure(machine.PinConfig{Mode: machine.PinOutput})
@@ -158,7 +157,7 @@ func main() {
 	// Initialize PWM for LCD Backlight and Audio Volume
 	initPWM()
 
-	// Goroutine 1: High speed matrix Scanner
+	// Goroutine 1: High speed Tri-State matrix Scanner
 	go matrixScanner(keyChan)
 
 	// Goroutine 2: Breathing Light Handler
@@ -174,26 +173,34 @@ var (
 	rawScan    [7][10]bool
 )
 
-// High-speed matrix scanner with non-blocking channels and atomic key tracking
+// High-speed matrix scanner with Tri-State High-Z column switching and atomic key tracking
 func matrixScanner(ch chan<- KeyEvent) {
 	for {
-		// 1. Hardware matrix scan with debouncing
-		for cIdx, cPin := range colPins {
-			cPin.High()
-			time.Sleep(time.Microsecond * 50)
-			for rIdx, rPin := range rowPins {
-				if rPin.Get() {
-					// 5ms debounce verification
-					time.Sleep(time.Millisecond * 5)
-					rawScan[rIdx][cIdx] = rPin.Get()
-				} else {
-					rawScan[rIdx][cIdx] = false
-				}
+		// 1. Clear raw scan matrix
+		for rIdx := 0; rIdx < 7; rIdx++ {
+			for cIdx := 0; cIdx < 10; cIdx++ {
+				rawScan[rIdx][cIdx] = false
 			}
-			cPin.Low()
 		}
 
-		// 2. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
+		// 2. Tri-state hardware matrix scan
+		for cIdx, cPin := range colPins {
+			// Drive active column HIGH (Output)
+			cPin.Configure(machine.PinConfig{Mode: machine.PinOutput})
+			cPin.High()
+			time.Sleep(time.Microsecond * 50)
+
+			for rIdx, rPin := range rowPins {
+				if rPin.Get() {
+					rawScan[rIdx][cIdx] = true
+				}
+			}
+
+			// Return column to INPUT (High-Z float) so inactive columns don't pull rows down
+			cPin.Configure(machine.PinConfig{Mode: machine.PinInput})
+		}
+
+		// 3. Check Fn Key state (Row 6, Col 0 or Row 6, Col 8)
 		fnActive := rawScan[6][0] || rawScan[6][8]
 
 		activeMap := &keyMap
@@ -201,7 +208,7 @@ func matrixScanner(ch chan<- KeyEvent) {
 			activeMap = &fnMap
 		}
 
-		// 3. Compare current hardware scan against activeKeys matrix
+		// 4. Compare current hardware scan against activeKeys matrix
 		for rIdx := 0; rIdx < 7; rIdx++ {
 			for cIdx := 0; cIdx < 10; cIdx++ {
 				pressed := rawScan[rIdx][cIdx]
